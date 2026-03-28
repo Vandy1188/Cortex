@@ -24,6 +24,10 @@ export const api = {
   updateTask: (id, data) => req('PATCH', `/tasks/${id}`, data),
 
   getAgentContext: (id) => req('GET', `/agents/${id}/context`),
+  updateAgent: (id, data) => req('PATCH', `/agents/${id}`, data),
+
+  getRoutines: (companyId) => req('GET', `/routines?company_id=${companyId}`),
+  createRoutine: (data) => req('POST', '/routines', data),
 
   getPendingApprovals: (companyId) => req('GET', `/approvals?company_id=${companyId}&status=pending`),
   createApproval: (data) => req('POST', '/approvals', data),

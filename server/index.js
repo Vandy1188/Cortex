@@ -13,6 +13,7 @@ app.use('/api/companies', require('./routes/companies'));
 app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api/approvals', require('./routes/approvals'));
 app.use('/api/agents', require('./routes/agents'));
+app.use('/api/routines', require('./routes/routines'));
 
 // Serve React build in production
 if (process.env.NODE_ENV === 'production') {

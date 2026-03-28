@@ -30,6 +30,16 @@ router.post('/', (req, res) => {
   `).run(company_id, assigned_agent_id || null, title, description || null, created_by || null);
 
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(result.lastInsertRowid);
+
+  // Auto-run: if the assigned agent has auto_run enabled, fire a background run
+  if (task.assigned_agent_id) {
+    const agent = db.prepare('SELECT * FROM agents WHERE id = ?').get(task.assigned_agent_id);
+    if (agent?.auto_run) {
+      const { backgroundRun } = require('../runner');
+      setImmediate(() => backgroundRun(agent));
+    }
+  }
+
   res.status(201).json(task);
 });
 

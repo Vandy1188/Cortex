@@ -101,6 +101,17 @@ const SCHEMA = `
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS routines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    agent_id INTEGER REFERENCES agents(id),
+    title TEXT NOT NULL,
+    description TEXT,
+    frequency TEXT NOT NULL DEFAULT 'manual' CHECK(frequency IN ('daily', 'weekly', 'manual')),
+    last_run_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE IF NOT EXISTS approvals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id INTEGER REFERENCES tasks(id),
@@ -121,6 +132,9 @@ const SCHEMA = `
 //   1. Old schema with NOT NULL on task_id → recreate table, copy data
 //   2. New-ish schema missing the proposal columns → ALTER TABLE ADD COLUMN
 function runMigrations() {
+  // Add auto_run column to agents (safe no-op if already present)
+  try { _db.run('ALTER TABLE agents ADD COLUMN auto_run INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
+
   const result = _db.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='approvals'");
   const currentSql = result[0]?.values[0][0] || '';
 

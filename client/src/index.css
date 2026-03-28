@@ -88,7 +88,10 @@ h3 { font-size: 16px; font-weight: 600; margin-bottom: 12px; color: #a1a1aa; }
 .badge-in_progress     { background: #1e3a5f; color: #60a5fa; }
 .badge-pending_approval{ background: #3b2d0f; color: #fbbf24; }
 .badge-done            { background: #163b2c; color: #34d399; }
-.badge-idle       { background: #27272a; color: #a1a1aa; }
+.badge-idle          { background: #27272a; color: #a1a1aa; }
+.badge-freq-manual   { background: #27272a; color: #a1a1aa; }
+.badge-freq-daily    { background: #1e3a5f; color: #60a5fa; }
+.badge-freq-weekly   { background: #2d1e3b; color: #c084fc; }
 .badge-working    { background: #3b2d0f; color: #fbbf24; }
 .badge-waiting    { background: #1e3a5f; color: #60a5fa; }
 .badge-pending    { background: #2d1e3b; color: #c084fc; }
