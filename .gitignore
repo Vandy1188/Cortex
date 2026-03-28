@@ -1,0 +1,7 @@
+node_modules/
+client/node_modules/
+client/dist/
+data/cortex.db
+data/cortex.db-shm
+data/cortex.db-wal
+.env
