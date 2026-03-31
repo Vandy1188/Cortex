@@ -8,6 +8,46 @@ function Badge({ value }) {
 
 const FREQ_LABELS = { manual: 'Manual', daily: 'Daily', weekly: 'Weekly' };
 
+// Self-contained output panel for a single agent/routine run.
+// Owns its own scroll ref so multiple panels can scroll independently.
+function RunPanel({ runKey, run, onStop, onDismiss }) {
+  const endRef = useRef(null);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [run.lines]);
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="row" style={{ marginBottom: 10 }}>
+        <h3 style={{ margin: 0, fontSize: 14 }}>
+          {!run.done
+            ? <span style={{ color: '#fbbf24' }}>● {run.label}</span>
+            : <span style={{ color: '#34d399' }}>✓ {run.label}</span>}
+        </h3>
+        <span className="spacer" />
+        {!run.done
+          ? <button className="btn btn-danger" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => onStop(runKey)}>Stop</button>
+          : <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => onDismiss(runKey)}>Dismiss</button>}
+      </div>
+      {run.error && (
+        <div style={{ color: '#f87171', fontSize: 13, marginBottom: 10 }}>Error: {run.error}</div>
+      )}
+      <div style={{
+        background: '#111113', border: '1px solid #27272a', borderRadius: 8,
+        padding: '12px 16px', fontFamily: "'Menlo','Monaco',monospace",
+        fontSize: 12, color: '#d4d4d8', whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word', maxHeight: 340, overflowY: 'auto', lineHeight: 1.6,
+      }}>
+        {run.lines.length === 0
+          ? <span style={{ color: '#52525b' }}>Waiting for output…</span>
+          : run.lines.join('')}
+        <div ref={endRef} />
+      </div>
+    </div>
+  );
+}
+
 export default function CompanyPage() {
   const { id } = useParams();
   const [company, setCompany] = useState(null);
@@ -25,10 +65,10 @@ export default function CompanyPage() {
   const [showTaskForm, setShowTaskForm] = useState(false);
   const [showRoutineForm, setShowRoutineForm] = useState(false);
 
-  // Runner state — label can be agent name or routine title
-  const [runState, setRunState] = useState(null); // { label, lines, done, error }
-  const abortRef = useRef(null);
-  const logEndRef = useRef(null);
+  // Keyed by runKey (e.g. "agent-1", "routine-3").
+  // Multiple runs can be active simultaneously.
+  const [runs, setRuns] = useState({});
+  const abortsRef = useRef({});
 
   async function load() {
     const [data, approvals, rts] = await Promise.all([
@@ -44,24 +84,25 @@ export default function CompanyPage() {
 
   useEffect(() => { load(); }, [id]);
 
-  useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [runState?.lines]);
-
   // ── Shared SSE streaming helper ───────────────────────────────────────────
-  // Used by both "Run" (agents) and "Run Now" (routines).
-  async function runStream(url, label, onStatusUpdate) {
-    if (runState && !runState.done) return;
+  async function runStream(url, runKey, label) {
+    // Don't double-start the exact same key while it's already running
+    if (runs[runKey] && !runs[runKey].done) return;
 
     const controller = new AbortController();
-    abortRef.current = controller;
-    setRunState({ label, lines: [], done: false, error: null });
+    abortsRef.current[runKey] = controller;
+
+    setRuns(prev => ({ ...prev, [runKey]: { label, lines: [], done: false, error: null } }));
 
     let response;
     try {
       response = await fetch(url, { method: 'POST', signal: controller.signal });
     } catch (err) {
-      if (err.name !== 'AbortError') setRunState(prev => ({ ...prev, error: err.message, done: true }));
+      if (err.name !== 'AbortError') {
+        setRuns(prev => prev[runKey]
+          ? { ...prev, [runKey]: { ...prev[runKey], error: err.message, done: true } }
+          : prev);
+      }
       return;
     }
 
@@ -69,7 +110,15 @@ export default function CompanyPage() {
     const decoder = new TextDecoder();
     let buf = '';
 
-    const append = (text) => setRunState(prev => prev ? { ...prev, lines: [...prev.lines, text] } : prev);
+    const append = (text) => setRuns(prev => {
+      const run = prev[runKey];
+      if (!run) return prev;
+      return { ...prev, [runKey]: { ...run, lines: [...run.lines, text] } };
+    });
+
+    const markDone = (error = null) => setRuns(prev => prev[runKey]
+      ? { ...prev, [runKey]: { ...prev[runKey], done: true, ...(error ? { error } : {}) } }
+      : prev);
 
     try {
       while (true) {
@@ -96,40 +145,43 @@ export default function CompanyPage() {
           } else if (event === 'result' && data.usage) {
             append(`\n[tokens: ${data.usage.input_tokens ?? 0} in / ${data.usage.output_tokens ?? 0} out]\n`);
           } else if (event === 'status' && data.agent_id) {
-            // Update the right agent's badge
             setCompany(prev => prev ? {
               ...prev,
               agents: prev.agents.map(a => a.id === data.agent_id ? { ...a, status: data.status } : a),
             } : prev);
-            if (onStatusUpdate) onStatusUpdate(data.status);
           } else if (event === 'close') {
-            setRunState(prev => prev ? { ...prev, done: true } : prev);
-            load(); // refresh task logs, last_run_at, token spend
+            markDone();
+            load();
           }
         }
       }
     } catch (err) {
-      if (err.name !== 'AbortError') setRunState(prev => prev ? { ...prev, error: err.message, done: true } : prev);
+      if (err.name !== 'AbortError') markDone(err.message);
     }
   }
 
   function runAgent(agent) {
-    // Optimistically flip badge before the first SSE status event arrives
     setCompany(prev => prev ? {
       ...prev,
       agents: prev.agents.map(a => a.id === agent.id ? { ...a, status: 'working' } : a),
     } : prev);
-    runStream(`/api/agents/${agent.id}/run`, agent.name);
+    runStream(`/api/agents/${agent.id}/run`, `agent-${agent.id}`, agent.name);
   }
 
   function runRoutine(routine) {
-    runStream(`/api/routines/${routine.id}/run`, routine.title);
+    runStream(`/api/routines/${routine.id}/run`, `routine-${routine.id}`, routine.title);
   }
 
-  function stopRun() {
-    abortRef.current?.abort();
-    setRunState(prev => prev ? { ...prev, done: true } : prev);
+  function stopRun(runKey) {
+    abortsRef.current[runKey]?.abort();
+    setRuns(prev => prev[runKey]
+      ? { ...prev, [runKey]: { ...prev[runKey], done: true } }
+      : prev);
     setTimeout(load, 800);
+  }
+
+  function dismissRun(runKey) {
+    setRuns(prev => { const next = { ...prev }; delete next[runKey]; return next; });
   }
 
   async function toggleAutoRun(agent) {
@@ -185,7 +237,7 @@ export default function CompanyPage() {
   if (loading) return <p className="empty">Loading...</p>;
   if (!company) return <p className="empty">Company not found.</p>;
 
-  const isRunning = runState && !runState.done;
+  const activeRuns = Object.entries(runs);
 
   return (
     <>
@@ -223,13 +275,9 @@ export default function CompanyPage() {
               </div>
               <div className="row">
                 <button className="btn btn-primary" style={{ fontSize: 12, padding: '4px 12px' }}
-                  onClick={async () => { await api.approveApproval(a.id); load(); }}>
-                  Approve
-                </button>
+                  onClick={async () => { await api.approveApproval(a.id); load(); }}>Approve</button>
                 <button className="btn btn-danger" style={{ fontSize: 12, padding: '4px 12px' }}
-                  onClick={async () => { await api.rejectApproval(a.id); load(); }}>
-                  Reject
-                </button>
+                  onClick={async () => { await api.rejectApproval(a.id); load(); }}>Reject</button>
               </div>
             </div>
           ))}
@@ -278,46 +326,45 @@ export default function CompanyPage() {
       {company.agents.length === 0 ? (
         <p className="empty">No agents yet.</p>
       ) : (
-        <div className="grid-2" style={{ marginBottom: runState ? 16 : 28 }}>
-          {company.agents.map(agent => (
-            <div key={agent.id} className="card">
-              <div className="row" style={{ marginBottom: 8 }}>
-                <div className="card-title">{agent.name}</div>
-                <span className="spacer" />
-                <Badge value={agent.status} />
+        <div className="grid-2" style={{ marginBottom: activeRuns.length > 0 ? 16 : 28 }}>
+          {company.agents.map(agent => {
+            const runKey = `agent-${agent.id}`;
+            const agentIsRunning = runs[runKey] && !runs[runKey].done;
+            return (
+              <div key={agent.id} className="card">
+                <div className="row" style={{ marginBottom: 8 }}>
+                  <div className="card-title">{agent.name}</div>
+                  <span className="spacer" />
+                  <Badge value={agent.status} />
+                </div>
+                <div className="card-meta" style={{ marginBottom: 10 }}>{agent.role} · {agent.model}</div>
+                <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                  <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }}
+                    onClick={() => loadContext(agent.id)}>
+                    {contextAgent === agent.id ? 'Hide Context' : 'Context'}
+                  </button>
+                  <button
+                    className="btn btn-primary"
+                    style={{ fontSize: 12, padding: '4px 10px' }}
+                    onClick={() => runAgent(agent)}
+                    disabled={agentIsRunning}
+                    title={agentIsRunning ? `${agent.name} is already running` : `Run ${agent.name}`}
+                  >
+                    {agentIsRunning ? 'Running…' : 'Run'}
+                  </button>
+                  <button
+                    className={`btn ${agent.auto_run ? 'btn-primary' : 'btn-ghost'}`}
+                    style={{ fontSize: 11, padding: '4px 10px', opacity: agent.auto_run ? 1 : 0.7,
+                      outline: agent.auto_run ? '1px solid #a78bfa' : 'none' }}
+                    onClick={() => toggleAutoRun(agent)}
+                    title={agent.auto_run ? 'Auto mode on — click to disable' : 'Manual mode — click to enable auto-run'}
+                  >
+                    {agent.auto_run ? 'Auto' : 'Manual'}
+                  </button>
+                </div>
               </div>
-              <div className="card-meta" style={{ marginBottom: 10 }}>{agent.role} · {agent.model}</div>
-              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }}
-                  onClick={() => loadContext(agent.id)}>
-                  {contextAgent === agent.id ? 'Hide Context' : 'Context'}
-                </button>
-                <button
-                  className="btn btn-primary"
-                  style={{ fontSize: 12, padding: '4px 10px' }}
-                  onClick={() => runAgent(agent)}
-                  disabled={isRunning}
-                  title={isRunning ? 'Another agent is running' : `Run ${agent.name}`}
-                >
-                  Run
-                </button>
-                {/* Auto-run toggle */}
-                <button
-                  className={`btn ${agent.auto_run ? 'btn-primary' : 'btn-ghost'}`}
-                  style={{
-                    fontSize: 11,
-                    padding: '4px 10px',
-                    opacity: agent.auto_run ? 1 : 0.7,
-                    outline: agent.auto_run ? '1px solid #a78bfa' : 'none',
-                  }}
-                  onClick={() => toggleAutoRun(agent)}
-                  title={agent.auto_run ? 'Auto mode: agent runs when assigned a task. Click to disable.' : 'Manual mode: click to enable auto-run.'}
-                >
-                  {agent.auto_run ? 'Auto' : 'Manual'}
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -328,34 +375,18 @@ export default function CompanyPage() {
         </div>
       )}
 
-      {/* Live run output panel */}
-      {runState && (
-        <div className="card" style={{ marginBottom: 28 }}>
-          <div className="row" style={{ marginBottom: 10 }}>
-            <h3 style={{ margin: 0 }}>
-              {isRunning
-                ? <span style={{ color: '#fbbf24' }}>● Running — {runState.label}</span>
-                : <span style={{ color: '#34d399' }}>✓ Done — {runState.label}</span>}
-            </h3>
-            <span className="spacer" />
-            {isRunning
-              ? <button className="btn btn-danger" style={{ fontSize: 12, padding: '4px 10px' }} onClick={stopRun}>Stop</button>
-              : <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => setRunState(null)}>Dismiss</button>}
-          </div>
-          {runState.error && (
-            <div style={{ color: '#f87171', fontSize: 13, marginBottom: 10 }}>Error: {runState.error}</div>
-          )}
-          <div style={{
-            background: '#111113', border: '1px solid #27272a', borderRadius: 8,
-            padding: '12px 16px', fontFamily: "'Menlo','Monaco',monospace",
-            fontSize: 12, color: '#d4d4d8', whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word', maxHeight: 420, overflowY: 'auto', lineHeight: 1.6,
-          }}>
-            {runState.lines.length === 0
-              ? <span style={{ color: '#52525b' }}>Waiting for output…</span>
-              : runState.lines.join('')}
-            <div ref={logEndRef} />
-          </div>
+      {/* Live run output panels — one per active/recent run */}
+      {activeRuns.length > 0 && (
+        <div style={{ marginBottom: 28 }}>
+          {activeRuns.map(([runKey, run]) => (
+            <RunPanel
+              key={runKey}
+              runKey={runKey}
+              run={run}
+              onStop={stopRun}
+              onDismiss={dismissRun}
+            />
+          ))}
         </div>
       )}
 
@@ -404,36 +435,36 @@ export default function CompanyPage() {
       {routines.length === 0 ? (
         <p className="empty">No routines yet.</p>
       ) : (
-        routines.map(routine => (
-          <div key={routine.id} className="card">
-            <div className="row" style={{ marginBottom: 8 }}>
-              <div className="card-title">{routine.title}</div>
-              <span className="spacer" />
-              <span className={`badge badge-freq-${routine.frequency}`}>
-                {FREQ_LABELS[routine.frequency]}
-              </span>
+        routines.map(routine => {
+          const routineRunKey = `routine-${routine.id}`;
+          const routineIsRunning = runs[routineRunKey] && !runs[routineRunKey].done;
+          return (
+            <div key={routine.id} className="card">
+              <div className="row" style={{ marginBottom: 8 }}>
+                <div className="card-title">{routine.title}</div>
+                <span className="spacer" />
+                <span className={`badge badge-freq-${routine.frequency}`}>{FREQ_LABELS[routine.frequency]}</span>
+              </div>
+              {routine.description && (
+                <div className="card-meta" style={{ marginBottom: 6 }}>{routine.description}</div>
+              )}
+              <div className="card-meta" style={{ marginBottom: 12 }}>
+                {routine.agent_name ? `${routine.agent_name} (${routine.agent_role})` : 'No agent assigned'}
+                {routine.last_run_at
+                  ? ` · Last run ${new Date(routine.last_run_at).toLocaleString()}`
+                  : ' · Never run'}
+              </div>
+              <button
+                className="btn btn-primary"
+                style={{ fontSize: 12, padding: '4px 12px' }}
+                onClick={() => runRoutine(routine)}
+                disabled={routineIsRunning}
+              >
+                {routineIsRunning ? 'Running…' : 'Run Now'}
+              </button>
             </div>
-            {routine.description && (
-              <div className="card-meta" style={{ marginBottom: 6 }}>{routine.description}</div>
-            )}
-            <div className="card-meta" style={{ marginBottom: 12 }}>
-              {routine.agent_name
-                ? `${routine.agent_name} (${routine.agent_role})`
-                : 'No agent assigned'}
-              {routine.last_run_at
-                ? ` · Last run ${new Date(routine.last_run_at).toLocaleString()}`
-                : ' · Never run'}
-            </div>
-            <button
-              className="btn btn-primary"
-              style={{ fontSize: 12, padding: '4px 12px' }}
-              onClick={() => runRoutine(routine)}
-              disabled={isRunning}
-            >
-              Run Now
-            </button>
-          </div>
-        ))
+          );
+        })
       )}
 
       <hr className="divider" />
@@ -472,24 +503,32 @@ export default function CompanyPage() {
       {company.tasks.length === 0 ? (
         <p className="empty">No tasks yet.</p>
       ) : (
-        company.tasks.map(task => (
-          <Link to={`/tasks/${task.id}`} key={task.id}>
-            <div className="card" style={{ cursor: 'pointer' }}>
-              <div className="row">
-                <div className="card-title">{task.title}</div>
-                <span className="spacer" />
-                <Badge value={task.status} />
+        company.tasks.map(task => {
+          const agent = company.agents.find(a => a.id === task.assigned_agent_id);
+          return (
+            <Link to={`/tasks/${task.id}`} key={task.id}>
+              <div className="card" style={{ cursor: 'pointer' }}>
+                <div className="row">
+                  <div className="card-title">{task.title}</div>
+                  <span className="spacer" />
+                  <Badge value={task.status} />
+                </div>
+                <div className="card-meta" style={{ marginTop: 4 }}>
+                  {agent
+                    ? <span style={{ color: '#a78bfa' }}>{agent.name} · {agent.role}</span>
+                    : <span style={{ color: '#52525b' }}>Unassigned</span>}
+                </div>
+                {task.description && (
+                  <div className="card-meta" style={{ marginTop: 6 }}>{task.description}</div>
+                )}
+                <div className="card-meta" style={{ marginTop: 6 }}>
+                  #{task.id} · {new Date(task.created_at).toLocaleDateString()}
+                  {task.token_spend > 0 && ` · ${task.token_spend.toLocaleString()} tokens`}
+                </div>
               </div>
-              {task.description && (
-                <div className="card-meta" style={{ marginTop: 6 }}>{task.description}</div>
-              )}
-              <div className="card-meta" style={{ marginTop: 6 }}>
-                #{task.id} · {task.created_by || 'unknown'} · {new Date(task.created_at).toLocaleDateString()}
-                {task.token_spend > 0 && ` · ${task.token_spend.toLocaleString()} tokens`}
-              </div>
-            </div>
-          </Link>
-        ))
+            </Link>
+          );
+        })
       )}
     </>
   );
