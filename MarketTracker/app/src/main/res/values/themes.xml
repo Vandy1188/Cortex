@@ -1,0 +1,5 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. Compose supplies the real Material3 theme (see ui/theme);
+         this XML theme just needs to exist for the manifest / launch window. -->
+    <style name="Theme.MarketTracker" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

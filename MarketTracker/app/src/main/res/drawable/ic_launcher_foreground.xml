@@ -1,0 +1,21 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Simple "tag" glyph as a stand-in launcher icon. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,24 L70,24 L86,40 L86,84 L30,84 Z"
+        android:fillAlpha="0" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,30 L64,30 L82,48 L82,80 L34,80 Z"
+        android:fillAlpha="0.15" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,36 h32 l16,16 v30 h-48 z" />
+    <path
+        android:fillColor="#1B5E20"
+        android:pathData="M48,46 m-5,0 a5,5 0 1,0 10,0 a5,5 0 1,0 -10,0" />
+</vector>
